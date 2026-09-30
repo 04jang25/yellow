@@ -199,7 +199,9 @@ if uploaded_file is not None:
             green_pct = (green_pixels / total_pixels) * 100.0
             
             # 최종 계산: 노란색(뜨거움) 100% + 초록색(식음) * 선택된 가중치
-            final_ratio = yellow_pct + (green_pct * green_weight)
+            calculated_ratio = yellow_pct + (green_pct * green_weight)
+            # 100% 상한선 보정
+            final_ratio = min(calculated_ratio, 100.0)
 
             with col2:
                 st.markdown("##### 2. 정면 보정")
@@ -221,14 +223,11 @@ if uploaded_file is not None:
             now = datetime.now()
             new_record = {
                 "사진 이름": uploaded_file.name,
-                "시간": now.strftime("%H:%M:%S"),
-                "냉각 모드": mode,
-                "고온 충진(노랑)": f"{yellow_pct:.2f}%",
-                "식은 충진(초록)": f"{green_pct:.2f}%",
+                "날짜시간": now.strftime("%Y-%m-%d %H:%M:%S"),
                 "최종 충진율": f"{final_ratio:.2f}%"
             }
             
-            if not st.session_state.history or st.session_state.history[0]["시간"] != new_record["시간"]:
+            if not st.session_state.history or st.session_state.history[0]["날짜시간"] != new_record["날짜시간"]:
                 st.session_state.history.insert(0, new_record)
 
         else:
