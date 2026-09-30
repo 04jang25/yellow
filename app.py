@@ -66,33 +66,15 @@ if "coord_key" not in st.session_state:
 st.markdown("""
     <div class="title-card">
         <h1>🔥 열화상 타일 정밀 충진율 분석 시스템</h1>
-        <p>냉각 상태 보정 및 동적 HSV 민감도 분석 솔루션 (노란색: 고온 / 초록색: 식음)</p>
+        <p>자동 냉각상태 진단 및 동적 HSV 민감도 분석 솔루션 (자동 객관화 알고리즘)</p>
     </div>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# 📌 사이드바: 초록색(식음) 중심 민감도 옵션 설정
-# ---------------------------------------------------------
 st.sidebar.header("📁 이미지 및 실험 조건")
 uploaded_file = st.sidebar.file_uploader("열화상 사진 선택", type=["jpg", "jpeg", "png", "bmp"])
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ 냉각 상태 / 민감도 설정")
-mode = st.sidebar.radio(
-    "시편 냉각 상태 선택",
-    ["기본 (적정 냉각 - 노랑 중심)", "많이 식음 (초록색 우세)", "사용자 지정 (직접 조절)"]
-)
-
-if mode == "기본 (적정 냉각 - 노랑 중심)":
-    green_weight = 0.4
-    green_h_min, green_h_max = 36, 85
-elif mode == "많이 식음 (초록색 우세)":
-    green_weight = 0.8
-    green_h_min, green_h_max = 30, 95
-else:
-    green_weight = st.sidebar.slider("초록색(식은 부위) 가중치 (0.0 ~ 1.0)", 0.0, 1.0, 0.5, 0.05)
-    green_h_min = st.sidebar.slider("초록색 최소 Hue", 25, 45, 36)
-    green_h_max = st.sidebar.slider("초록색 최대 Hue", 70, 100, 85)
+st.sidebar.info("🤖 **자동 감지 모드 활성화**\n\n이미지의 Hue(색상) 분포를 기반으로 냉각 상태 및 초록색 가중치가 수학적으로 자동 책정됩니다.")
 
 if uploaded_file is not None:
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
@@ -168,18 +150,35 @@ if uploaded_file is not None:
             # HSV 변환
             hsv = cv2.cvtColor(warped_img, cv2.COLOR_BGR2HSV)
             
-            # 1. 노란색 영역 (뜨거운 완전 충진 영역: 100% 충진)
+            # 1. 노란색 기본 추출
             lower_yellow = np.array([18, 30, 40])
             upper_yellow = np.array([35, 255, 255])
             mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
             
-            # 2. 초록색 원본 영역 추출
+            # 2. 임시 초록색 범위 추출 (냉각도 자동 측정을 위함)
+            raw_green_check = cv2.inRange(hsv, np.array([30, 30, 40]), np.array([90, 255, 255]))
+            
+            y_cnt = np.sum(mask_yellow == 255)
+            g_cnt = np.sum(raw_green_check == 255)
+            
+            # 💡 [객관적 자동 보정 알고리즘]
+            # 초록 비율(식은 정도)에 따라 가중치(green_weight)와 Hue 범위를 자동으로 계산
+            if y_cnt + g_cnt > 0:
+                cool_ratio = g_cnt / (y_cnt + g_cnt)  # 식은 정도 (0.0 ~ 1.0)
+            else:
+                cool_ratio = 0.0
+            
+            # 식은 비율이 높을수록 초록 가중치(0.3~0.8) 및 Hue 범위를 산술식으로 자동 계산
+            green_weight = round(0.3 + (cool_ratio * 0.5), 2)
+            green_h_min = int(36 - (cool_ratio * 6))  # 많이 식을수록 범위 확장 (36 -> 30)
+            green_h_max = int(85 + (cool_ratio * 10)) # 많이 식을수록 범위 확장 (85 -> 95)
+            
+            # 3. 정밀 초록색 영역 추출
             lower_green = np.array([green_h_min, 30, 40])
             upper_green = np.array([green_h_max, 255, 255])
             raw_mask_green = cv2.inRange(hsv, lower_green, upper_green)
 
-            # 💡 [중복 제거 핵심 로직]
-            # 초록색 마스크에서 노란색과 겹치는 픽셀을 제외하여 상호 배타적으로 처리
+            # 중복 제거: 노란색 영역 제외
             mask_green = cv2.bitwise_and(raw_mask_green, cv2.bitwise_not(mask_yellow))
 
             # 노이즈 제거
@@ -187,7 +186,7 @@ if uploaded_file is not None:
             mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_OPEN, kernel)
             mask_green = cv2.morphologyEx(mask_green, cv2.MORPH_OPEN, kernel)
             
-            # 마스크 시각화 (노란색 영역: 흰색 255 / 초록색 영역: 회색 180)
+            # 마스크 시각화
             display_mask = np.zeros((TARGET_H, TARGET_W), dtype=np.uint8)
             display_mask[mask_yellow == 255] = 255
             display_mask[mask_green == 255] = 180
@@ -197,13 +196,10 @@ if uploaded_file is not None:
             green_pixels = np.sum(mask_green == 255)
             total_pixels = TARGET_W * TARGET_H
 
-            # 중복이 제거되었으므로 yellow_pct + green_pct 는 전체 영역 대비 순수 독립 비율임
             yellow_pct = (yellow_pixels / total_pixels) * 100.0
             green_pct = (green_pixels / total_pixels) * 100.0
             
-            # 최종 계산: 순수 노란색 100% + 순수 초록색 * 선택 가중치
             calculated_ratio = yellow_pct + (green_pct * green_weight)
-            # 100% 상한선 보정
             final_ratio = min(calculated_ratio, 100.0)
 
             with col2:
@@ -216,7 +212,8 @@ if uploaded_file is not None:
 
             st.markdown("<br>", unsafe_allow_html=True)
             
-            st.info(f"🟡 고온 충진(노랑): **{yellow_pct:.2f}%** | 🟢 식은 충진(순수 초록): **{green_pct:.2f}%** (적용 가중치: {int(green_weight*100)}%)")
+            st.info(f"🤖 **자동 알고리즘 진단:** 식음 지수({cool_ratio*100:.1f}%) ➔ 초록 가중치 **{int(green_weight*100)}%** 자동 적용")
+            st.write(f"🟡 고온 충진(노랑): **{yellow_pct:.2f}%** | 🟢 식은 충진(순수 초록): **{green_pct:.2f}%**")
 
             if final_ratio >= 80.0:
                 st.success(f"🎉 **[기준 80% 만족 (합격)]** 최종 가중 충진율: **{final_ratio:.2f}%**")
@@ -230,7 +227,7 @@ if uploaded_file is not None:
                 "최종 충진율": f"{final_ratio:.2f}%"
             }
             
-            if not st.session_state.history or st.session_state.history[0]["날짜시간"] != new_record["날짜시간"]:
+            if not st.session_state.history or st.session_state.history[0].get("날짜시간") != new_record["날짜시간"]:
                 st.session_state.history.insert(0, new_record)
 
         else:
