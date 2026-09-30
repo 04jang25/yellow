@@ -83,14 +83,12 @@ mode = st.sidebar.radio(
     ["기본 (적정 냉각 - 노랑 중심)", "많이 식음 (초록색 우세)", "사용자 지정 (직접 조절)"]
 )
 
-# 노란색 = 완전 충진 (100% 반영)
-# 초록색 = 더 많이 식어가는 충진 영역 (가중치 조정)
 if mode == "기본 (적정 냉각 - 노랑 중심)":
     green_weight = 0.4
     green_h_min, green_h_max = 36, 85
 elif mode == "많이 식음 (초록색 우세)":
-    green_weight = 0.8  # 많이 식은 시편은 초록색도 충진재로 크게 인정 (80% 반영)
-    green_h_min, green_h_max = 30, 95  # 식어서 변한 초록색/연두색 범위를 넓혀 감지
+    green_weight = 0.8
+    green_h_min, green_h_max = 30, 95
 else:
     green_weight = st.sidebar.slider("초록색(식은 부위) 가중치 (0.0 ~ 1.0)", 0.0, 1.0, 0.5, 0.05)
     green_h_min = st.sidebar.slider("초록색 최소 Hue", 25, 45, 36)
@@ -175,17 +173,21 @@ if uploaded_file is not None:
             upper_yellow = np.array([35, 255, 255])
             mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
             
-            # 2. 초록색 영역 (더 많이 식은 충진 영역: 설정된 가중치 적용)
+            # 2. 초록색 원본 영역 추출
             lower_green = np.array([green_h_min, 30, 40])
             upper_green = np.array([green_h_max, 255, 255])
-            mask_green = cv2.inRange(hsv, lower_green, upper_green)
+            raw_mask_green = cv2.inRange(hsv, lower_green, upper_green)
+
+            # 💡 [중복 제거 핵심 로직]
+            # 초록색 마스크에서 노란색과 겹치는 픽셀을 제외하여 상호 배타적으로 처리
+            mask_green = cv2.bitwise_and(raw_mask_green, cv2.bitwise_not(mask_yellow))
 
             # 노이즈 제거
             kernel = np.ones((3, 3), np.uint8)
             mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_OPEN, kernel)
             mask_green = cv2.morphologyEx(mask_green, cv2.MORPH_OPEN, kernel)
             
-            # 마스크 시각화 (노란색: 255 / 초록색: 180)
+            # 마스크 시각화 (노란색 영역: 흰색 255 / 초록색 영역: 회색 180)
             display_mask = np.zeros((TARGET_H, TARGET_W), dtype=np.uint8)
             display_mask[mask_yellow == 255] = 255
             display_mask[mask_green == 255] = 180
@@ -195,10 +197,11 @@ if uploaded_file is not None:
             green_pixels = np.sum(mask_green == 255)
             total_pixels = TARGET_W * TARGET_H
 
+            # 중복이 제거되었으므로 yellow_pct + green_pct 는 전체 영역 대비 순수 독립 비율임
             yellow_pct = (yellow_pixels / total_pixels) * 100.0
             green_pct = (green_pixels / total_pixels) * 100.0
             
-            # 최종 계산: 노란색(뜨거움) 100% + 초록색(식음) * 선택된 가중치
+            # 최종 계산: 순수 노란색 100% + 순수 초록색 * 선택 가중치
             calculated_ratio = yellow_pct + (green_pct * green_weight)
             # 100% 상한선 보정
             final_ratio = min(calculated_ratio, 100.0)
@@ -213,7 +216,7 @@ if uploaded_file is not None:
 
             st.markdown("<br>", unsafe_allow_html=True)
             
-            st.info(f"🟡 고온 충진(노랑): **{yellow_pct:.2f}%** | 🟢 식은 충진(초록): **{green_pct:.2f}%** (적용 가중치: {int(green_weight*100)}%)")
+            st.info(f"🟡 고온 충진(노랑): **{yellow_pct:.2f}%** | 🟢 식은 충진(순수 초록): **{green_pct:.2f}%** (적용 가중치: {int(green_weight*100)}%)")
 
             if final_ratio >= 80.0:
                 st.success(f"🎉 **[기준 80% 만족 (합격)]** 최종 가중 충진율: **{final_ratio:.2f}%**")
