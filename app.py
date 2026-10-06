@@ -66,27 +66,15 @@ if "coord_key" not in st.session_state:
 st.markdown("""
     <div class="title-card">
         <h1>🔥 열화상 타일 정밀 충진율 분석 시스템</h1>
-        <p>색상 범주별 가중치 및 Abaqus FEA-실험 이미지 보정계수 적용 솔루션</p>
+        <p>색상 범주별 고정 가중치(초록 100% / 노랑·주황 70% / 빨강 0%) 기반 분석 솔루션</p>
     </div>
 """, unsafe_allow_html=True)
 
-st.sidebar.header("📁 이미지 및 실험 조건")
+st.sidebar.header("📁 이미지 업로드")
 uploaded_file = st.sidebar.file_uploader("열화상 사진 선택", type=["jpg", "jpeg", "png", "bmp"])
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ 실험 보정 설정 (Abaqus 대비)")
-
-# 실물 열화상 카메라 보정 옵션
-use_calibration = st.sidebar.checkbox("실제 촬영 이미지 보정계수 적용", value=True)
-if use_calibration:
-    calib_offset = st.sidebar.number_input("보정계수 (+%p)", min_value=0.0, max_value=20.0, value=8.16, step=0.1, help="Abaqus FEA 해석 결과와 실제 촬영 이미지 간 열확산 편차를 보정합니다.")
-    yellow_weight = st.sidebar.slider("노랑/주황(회색) 가중치", min_value=0.30, max_value=0.80, value=0.45, step=0.05)
-else:
-    calib_offset = 0.0
-    yellow_weight = 0.45
-
-st.sidebar.markdown("---")
-st.sidebar.info("💡 **마스크 명암 기준**\n\n- ⚪ **완전 충진(초록/연두)**: 흰색 (100% 반영)\n- 🔘 **부분 충진(노랑/주황)**: 회색 (가중치 반영)\n- ⚫ **미충진(빨강/빛반사)**: 검은색 (0% 반영)")
+st.sidebar.info("💡 **마스크 명암 및 가중치 기준**\n\n- ⚪ **완전 충진(초록/연두)**: 흰색 (100% 반영)\n- 🔘 **부분 충진(노랑/주황)**: 회색 (70% 반영)\n- ⚫ **미충진(빨강/빛반사)**: 검은색 (0% 반영)")
 
 if uploaded_file is not None:
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
@@ -163,10 +151,9 @@ if uploaded_file is not None:
             hsv = cv2.cvtColor(warped_img, cv2.COLOR_BGR2HSV)
             
             # 1. 초록색 영역 (완전 충진: 100%)
-            # Hue 범위를 18~98로 넓혀 경계 연두/노란 빛 흡수
             mask_green = cv2.inRange(hsv, np.array([18, 15, 15]), np.array([98, 255, 255]))
 
-            # 2. 노란색~주황색 영역 (부분 충진: 가중치 적용)
+            # 2. 노란색~주황색 영역 (부분 충진: 고정 가중치 70% 적용)
             mask_yellow_orange = cv2.inRange(hsv, np.array([8, 30, 30]), np.array([17, 255, 245]))
 
             # 3. 포화 흰색 영역 (빛 반사 하얀 부분) -> 검은색 미충진 처리
@@ -210,9 +197,8 @@ if uploaded_file is not None:
             yellow_orange_pct = (yellow_orange_pixels / total_pixels) * 100.0
             red_pct = (red_pixels / total_pixels) * 100.0
 
-            # 보정계수 반영 계산
-            raw_calculated = green_pct + (yellow_orange_pct * yellow_weight)
-            final_ratio = min(raw_calculated + calib_offset, 100.0)
+            # 노랑/주황 영역 고정 가중치 0.70(70%) 적용
+            final_ratio = min(green_pct + (yellow_orange_pct * 0.70), 100.0)
 
             with col2:
                 st.markdown("##### 2. 정면 보정")
@@ -224,17 +210,13 @@ if uploaded_file is not None:
 
             st.markdown("<br>", unsafe_allow_html=True)
             
-            st.info(f"💡 **진단 마스크 톤 분석:** ⚪ **흰색(완전 충진)**: 100% | 🔘 **회색(부분 충진)**: {int(yellow_weight*100)}% | ⚫ **검은색(미충진/빛반사)**: 0%")
-            
-            if use_calibration and calib_offset > 0:
-                st.write(f"⚪ **흰색:** {green_pct:.2f}% | 🔘 **회색:** {yellow_orange_pct:.2f}% | ⚫ **검은색:** {red_pct:.2f}% (실험 보정계수: **+{calib_offset:.2f}%p** 반영)")
-            else:
-                st.write(f"⚪ **흰색:** {green_pct:.2f}% | 🔘 **회색:** {yellow_orange_pct:.2f}% | ⚫ **검은색:** {red_pct:.2f}%")
+            st.info("💡 **진단 마스크 톤 분석:** ⚪ **흰색(완전 충진)**: 100% | 🔘 **회색(부분 충진)**: 70% | ⚫ **검은색(미충진/빛반사)**: 0%")
+            st.write(f"⚪ **흰색 (100%):** {green_pct:.2f}% | 🔘 **회색 (70%):** {yellow_orange_pct:.2f}% | ⚫ **검은색 (0%):** {red_pct:.2f}%")
 
             if final_ratio >= 80.0:
-                st.success(f"🎉 **[기준 80% 만족 (합격)]** 최종 보정 충진율: **{final_ratio:.2f}%**")
+                st.success(f"🎉 **[기준 80% 만족 (합격)]** 최종 가중 충진율: **{final_ratio:.2f}%**")
             else:
-                st.error(f"🚨 **[기준 80% 미달 (불합격)]** 최종 보정 충진율: **{final_ratio:.2f}%**")
+                st.error(f"🚨 **[기준 80% 미달 (불합격)]** 최종 가중 충진율: **{final_ratio:.2f}%**")
 
             now = datetime.now()
             new_record = {
