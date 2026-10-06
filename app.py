@@ -151,12 +151,12 @@ if uploaded_file is not None:
             hsv = cv2.cvtColor(warped_img, cv2.COLOR_BGR2HSV)
             
             # 1. 초록색 영역 (완전 충진: 가중치 1.0 -> 흰색 255)
-            # Hue 범위를 24~98로 확대하여 연두색 및 청록 영역까지 포함
-            mask_green = cv2.inRange(hsv, np.array([24, 25, 25]), np.array([98, 255, 255]))
+            # Hue 범위를 20~98로 늘려 연두색/진한 노란색 영역까지 완전 충진(흰색)으로 흡수
+            mask_green = cv2.inRange(hsv, np.array([20, 20, 20]), np.array([98, 255, 255]))
 
             # 2. 노란색~주황색 영역 (부분 충진: 가중치 0.45 -> 회색 128)
-            # 초록색 침범을 막기 위해 노랑 상한을 Hue 23으로 설정
-            mask_yellow_orange = cv2.inRange(hsv, np.array([10, 40, 40]), np.array([23, 255, 245]))
+            # 부분 충진 범위를 Hue 10~19로 줄여 회색 마스크 비중 축소
+            mask_yellow_orange = cv2.inRange(hsv, np.array([10, 40, 40]), np.array([19, 255, 245]))
 
             # 3. 포화 흰색 영역 (빛 반사 하얀 부분) -> 검은색 미충진 처리
             white_mask = cv2.inRange(hsv, np.array([0, 0, 200]), np.array([180, 50, 255]))
@@ -169,7 +169,7 @@ if uploaded_file is not None:
             # 초록색 영역 최우선 지정
             mask_yellow_orange = cv2.bitwise_and(mask_yellow_orange, cv2.bitwise_not(mask_green))
 
-            # 모폴로지 연산 (노이즈만 정제)
+            # 모폴로지 연산 (노이즈 정제)
             kernel = np.ones((3, 3), np.uint8)
             mask_green = cv2.morphologyEx(mask_green, cv2.MORPH_OPEN, kernel)
             mask_yellow_orange = cv2.morphologyEx(mask_yellow_orange, cv2.MORPH_OPEN, kernel)
