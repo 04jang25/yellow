@@ -66,7 +66,7 @@ if "coord_key" not in st.session_state:
 st.markdown("""
     <div class="title-card">
         <h1>🔥 열화상 타일 정밀 충진율 분석 시스템</h1>
-        <p>색상 범주별 가중치(초록 100% / 노랑·주황 45% / 빨강 0%) 및 무채색 마스크 솔루션</p>
+        <p>색상 범주별 가중치(초록 100% / 노랑·주황 45% / 빨강 0%) 및 빛 반사 보정 필터링</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -150,55 +150,58 @@ if uploaded_file is not None:
             # HSV 변환
             hsv = cv2.cvtColor(warped_img, cv2.COLOR_BGR2HSV)
             
-            # 1. 포화 영역(빛 반사로 흰색으로 보임) 감지 (낮은 채도, 높은 명도) -> 검은색 미충진 처리
-            white_mask = cv2.inRange(hsv, np.array([0, 0, 200]), np.array([180, 50, 255]))
+            # 1. 초록색 영역 (완전 충진: 1.0 -> 흰색 255)
+            mask_green = cv2.inRange(hsv, np.array([28, 35, 35]), np.array([95, 255, 255]))
 
-            # 2. 초록색 영역 (완전 충진: 가중치 1.0 -> 흰색 255)
-            # Hue 범위를 28~95로 확대하여 연두색, 진한 초록, 청록 영역까지 넓게 포함
-            mask_green = cv2.inRange(hsv, np.array([28, 30, 30]), np.array([95, 255, 255]))
+            # 2. 노란색~주황색 영역 (부분 충진: 0.45 -> 회색 128)
+            # 빛 반사 노이즈 방지를 위해 S(채도), V(명도) 하한선 및 상한선 보정
+            mask_yellow_orange = cv2.inRange(hsv, np.array([10, 60, 60]), np.array([27, 255, 220]))
 
-            # 3. 노란색~주황색 영역 (부분 충진: 가중치 0.45 -> 회색 128)
-            # 초록색과 겹치지 않도록 상한을 27로 설정
-            mask_yellow_orange = cv2.inRange(hsv, np.array([10, 30, 30]), np.array([27, 255, 255]))
+            # 3. 포화 흰색 영역 (빛 반사 하얀 부분) -> 검은색 미충진 처리
+            white_mask = cv2.inRange(hsv, np.array([0, 0, 190]), np.array([180, 55, 255]))
 
-            # 4. 빨간색 영역 (미충진: 가중치 0.0 -> 검은색 0)
-            red_mask1 = cv2.inRange(hsv, np.array([0, 30, 30]), np.array([9, 255, 255]))
-            red_mask2 = cv2.inRange(hsv, np.array([165, 30, 30]), np.array([180, 255, 255]))
+            # 4. 빨간색 영역 (미충진)
+            red_mask1 = cv2.inRange(hsv, np.array([0, 35, 35]), np.array([9, 255, 255]))
+            red_mask2 = cv2.inRange(hsv, np.array([165, 35, 35]), np.array([180, 255, 255]))
             mask_red = cv2.bitwise_or(red_mask1, red_mask2)
 
-            # 빛 반사(포화 흰색) 영역을 빨간색(미충진) 영역으로 통합
-            mask_red_corrected = cv2.bitwise_or(mask_red, white_mask)
-
-            # 중복 영역 제거 (초록색을 최우선 적용)
+            # 초록색을 최우선으로 지정
             mask_yellow_orange = cv2.bitwise_and(mask_yellow_orange, cv2.bitwise_not(mask_green))
 
-            # 노이즈 제거 (모폴로지 연산)
+            # 모폴로지 연산 (노이즈 제거 및 작은 구멍 채우기)
             kernel = np.ones((3, 3), np.uint8)
             mask_green = cv2.morphologyEx(mask_green, cv2.MORPH_OPEN, kernel)
-            mask_yellow_orange = cv2.morphologyEx(mask_yellow_orange, cv2.MORPH_OPEN, kernel)
-            mask_red_corrected = cv2.morphologyEx(mask_red_corrected, cv2.MORPH_OPEN, kernel)
+            
+            # 노랑/주황색 마스크의 노이즈 추가 제거 (Morphology Opening 강하게 적용)
+            kernel_strong = np.ones((4, 4), np.uint8)
+            mask_yellow_orange = cv2.morphologyEx(mask_yellow_orange, cv2.MORPH_OPEN, kernel_strong)
+
+            # 아주 작은 소규모 회색 피스(빛 반사 찌꺼기) 제거 필터
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_yellow_orange)
+            min_size = 150  # 150픽셀 미만의 미세 회색 점들은 삭제 (검은색으로 변경)
+            filtered_yellow = np.zeros_like(mask_yellow_orange)
+            for i in range(1, num_labels):
+                if stats[i, cv2.CC_STAT_AREA] >= min_size:
+                    filtered_yellow[labels == i] = 255
+            mask_yellow_orange = filtered_yellow
 
             # 무채색 진단 마스크 생성 (기본값: 검은색 = 0, 미충진)
             display_mask_gray = np.zeros((TARGET_H, TARGET_W), dtype=np.uint8)
-            
-            # 회색 (128): 부분 충진 (노랑/주황, 45%)
-            display_mask_gray[mask_yellow_orange == 255] = 128
-            
-            # 흰색 (255): 완전 충진 (초록/연두, 100%)
-            display_mask_gray[mask_green == 255] = 255
+            display_mask_gray[mask_yellow_orange == 255] = 128  # 회색
+            display_mask_gray[mask_green == 255] = 255          # 흰색
 
             # 픽셀 수 계산
             green_pixels = np.sum(mask_green == 255)
             yellow_orange_pixels = np.sum(mask_yellow_orange == 255)
-            red_pixels = np.sum(mask_red_corrected == 255)
             total_pixels = TARGET_W * TARGET_H
+            red_pixels = total_pixels - (green_pixels + yellow_orange_pixels)
 
             # 비율 계산
             green_pct = (green_pixels / total_pixels) * 100.0
             yellow_orange_pct = (yellow_orange_pixels / total_pixels) * 100.0
             red_pct = (red_pixels / total_pixels) * 100.0
 
-            # 가중치 반영 충진율 산출 (초록 100% + 노랑/주황 45%)
+            # 가중치 반영 충진율 산출
             calculated_ratio = green_pct + (yellow_orange_pct * 0.45)
             final_ratio = min(calculated_ratio, 100.0)
 
