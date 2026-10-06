@@ -151,20 +151,17 @@ if uploaded_file is not None:
             hsv = cv2.cvtColor(warped_img, cv2.COLOR_BGR2HSV)
             
             # 1. 초록색 영역 (완전 충진: 100%)
-            mask_green = cv2.inRange(hsv, np.array([18, 15, 15]), np.array([98, 255, 255]))
+            mask_green = cv2.inRange(hsv, np.array([35, 30, 30]), np.array([98, 255, 255]))
 
-            # 2. 노란색~주황색 영역 (부분 충진: 고정 가중치 70% 적용)
-            mask_yellow_orange = cv2.inRange(hsv, np.array([8, 30, 30]), np.array([17, 255, 245]))
+            # 2. 노란색~주황색 영역 (확장 적용: Hue 8~38, 채도/명도 범위 완화)
+            mask_yellow_orange = cv2.inRange(hsv, np.array([8, 20, 20]), np.array([38, 255, 255]))
 
-            # 3. 포화 흰색 영역 (빛 반사 하얀 부분) -> 검은색 미충진 처리
-            white_mask = cv2.inRange(hsv, np.array([0, 0, 200]), np.array([180, 50, 255]))
-
-            # 4. 빨간색 영역 (미충진)
-            red_mask1 = cv2.inRange(hsv, np.array([0, 30, 30]), np.array([7, 255, 255]))
-            red_mask2 = cv2.inRange(hsv, np.array([165, 30, 30]), np.array([180, 255, 255]))
+            # 3. 빨간색 영역 (축소 적용: Hue 0~7 및 173~180, 채도/명도 기준 강화)
+            red_mask1 = cv2.inRange(hsv, np.array([0, 100, 100]), np.array([7, 255, 255]))
+            red_mask2 = cv2.inRange(hsv, np.array([173, 100, 100]), np.array([180, 255, 255]))
             mask_red = cv2.bitwise_or(red_mask1, red_mask2)
 
-            # 초록색 영역 최우선 지정
+            # 초록색 영역 우선 처리 (중복 제거)
             mask_yellow_orange = cv2.bitwise_and(mask_yellow_orange, cv2.bitwise_not(mask_green))
 
             # 모폴로지 연산
@@ -195,9 +192,9 @@ if uploaded_file is not None:
             # 비율 계산
             green_pct = (green_pixels / total_pixels) * 100.0
             yellow_orange_pct = (yellow_orange_pixels / total_pixels) * 100.0
-            red_pct = (red_pixels / total_pixels) * 100.0
+            red_pct = max((red_pixels / total_pixels) * 100.0, 0.0)
 
-            # 노랑/주황 영역 고정 가중치 0.70(70%) 적용
+            # 고정 가중치 70% 적용
             final_ratio = min(green_pct + (yellow_orange_pct * 0.70), 100.0)
 
             with col2:
