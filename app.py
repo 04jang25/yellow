@@ -66,7 +66,7 @@ if "coord_key" not in st.session_state:
 st.markdown("""
     <div class="title-card">
         <h1>🔥 열화상 타일 정밀 충진율 분석 시스템</h1>
-        <p>자동 냉각상태 진단 및 동적 HSV 민감도 분석 솔루션 (자동 객관화 알고리즘)</p>
+        <p>색상 범주별 가중치(초록 100% / 노랑·주황 45% / 빨강 0%) 및 빛 반사 보정 솔루션</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -74,7 +74,7 @@ st.sidebar.header("📁 이미지 및 실험 조건")
 uploaded_file = st.sidebar.file_uploader("열화상 사진 선택", type=["jpg", "jpeg", "png", "bmp"])
 
 st.sidebar.markdown("---")
-st.sidebar.info("🤖 **자동 감지 모드 활성화**\n\n이미지의 Hue(색상) 분포를 기반으로 냉각 상태 및 초록색 가중치가 수학적으로 자동 책정됩니다.")
+st.sidebar.info("💡 **가중치 충진율 기준**\n\n- 🟢 **완전 충진(초록)**: 100% 가중치\n- 🟡 **부분 충진(노랑~주황)**: 45% 가중치\n- 🔴 **미충진(빨강 및 포화 흰색)**: 0% (미충진)")
 
 if uploaded_file is not None:
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
@@ -150,56 +150,48 @@ if uploaded_file is not None:
             # HSV 변환
             hsv = cv2.cvtColor(warped_img, cv2.COLOR_BGR2HSV)
             
-            # 1. 노란색 기본 추출
-            lower_yellow = np.array([18, 30, 40])
-            upper_yellow = np.array([35, 255, 255])
-            mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
-            
-            # 2. 임시 초록색 범위 추출 (냉각도 자동 측정을 위함)
-            raw_green_check = cv2.inRange(hsv, np.array([30, 30, 40]), np.array([90, 255, 255]))
-            
-            y_cnt = np.sum(mask_yellow == 255)
-            g_cnt = np.sum(raw_green_check == 255)
-            
-            # 💡 [객관적 자동 보정 알고리즘]
-            # 초록 비율(식은 정도)에 따라 가중치(green_weight)와 Hue 범위를 자동으로 계산
-            if y_cnt + g_cnt > 0:
-                cool_ratio = g_cnt / (y_cnt + g_cnt)  # 식은 정도 (0.0 ~ 1.0)
-            else:
-                cool_ratio = 0.0
-            
-            # 식은 비율이 높을수록 초록 가중치(0.3~0.8) 및 Hue 범위를 산술식으로 자동 계산
-            green_weight = round(0.3 + (cool_ratio * 0.5), 2)
-            green_h_min = int(36 - (cool_ratio * 6))  # 많이 식을수록 범위 확장 (36 -> 30)
-            green_h_max = int(85 + (cool_ratio * 10)) # 많이 식을수록 범위 확장 (85 -> 95)
-            
-            # 3. 정밀 초록색 영역 추출
-            lower_green = np.array([green_h_min, 30, 40])
-            upper_green = np.array([green_h_max, 255, 255])
-            raw_mask_green = cv2.inRange(hsv, lower_green, upper_green)
+            # 1. 포화 영역(빛 반사로 하얗게 날아간 부분) 감지 (낮은 채도, 높은 명도)
+            white_mask = cv2.inRange(hsv, np.array([0, 0, 200]), np.array([180, 55, 255]))
 
-            # 중복 제거: 노란색 영역 제외
-            mask_green = cv2.bitwise_and(raw_mask_green, cv2.bitwise_not(mask_yellow))
+            # 2. 초록색 영역 (완전 충진: 가중치 1.0)
+            mask_green = cv2.inRange(hsv, np.array([35, 50, 50]), np.array([85, 255, 255]))
 
-            # 노이즈 제거
+            # 3. 노란색~주황색 영역 (부분 충진: 가중치 0.45)
+            mask_yellow_orange = cv2.inRange(hsv, np.array([10, 50, 50]), np.array([34, 255, 255]))
+
+            # 4. 빨간색 영역 (미충진: 가중치 0.0)
+            red_mask1 = cv2.inRange(hsv, np.array([0, 50, 50]), np.array([9, 255, 255]))
+            red_mask2 = cv2.inRange(hsv, np.array([170, 50, 50]), np.array([180, 255, 255]))
+            mask_red = cv2.bitwise_or(red_mask1, red_mask2)
+
+            # 포화 흰색 영역을 빨간색(미충진) 영역으로 통합 보정
+            mask_red_corrected = cv2.bitwise_or(mask_red, white_mask)
+
+            # 노이즈 제거 (모폴로지 연산)
             kernel = np.ones((3, 3), np.uint8)
-            mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_OPEN, kernel)
             mask_green = cv2.morphologyEx(mask_green, cv2.MORPH_OPEN, kernel)
-            
-            # 마스크 시각화
-            display_mask = np.zeros((TARGET_H, TARGET_W), dtype=np.uint8)
-            display_mask[mask_yellow == 255] = 255
-            display_mask[mask_green == 255] = 180
-            display_mask_bgr = cv2.cvtColor(display_mask, cv2.COLOR_GRAY2BGR)
+            mask_yellow_orange = cv2.morphologyEx(mask_yellow_orange, cv2.MORPH_OPEN, kernel)
+            mask_red_corrected = cv2.morphologyEx(mask_red_corrected, cv2.MORPH_OPEN, kernel)
 
-            yellow_pixels = np.sum(mask_yellow == 255)
+            # 시각화용 마스크 생성 (초록: 밝은 녹색, 노랑/주황: 노란색, 빨강/흰색: 빨간색)
+            display_mask_bgr = np.zeros((TARGET_H, TARGET_W, 3), dtype=np.uint8)
+            display_mask_bgr[mask_red_corrected == 255] = [0, 0, 255]        # BGR: Red
+            display_mask_bgr[mask_yellow_orange == 255] = [0, 255, 255]      # BGR: Yellow
+            display_mask_bgr[mask_green == 255] = [0, 255, 0]                # BGR: Green
+
+            # 픽셀 수 계산
             green_pixels = np.sum(mask_green == 255)
+            yellow_orange_pixels = np.sum(mask_yellow_orange == 255)
+            red_pixels = np.sum(mask_red_corrected == 255)
             total_pixels = TARGET_W * TARGET_H
 
-            yellow_pct = (yellow_pixels / total_pixels) * 100.0
+            # 비율 계산
             green_pct = (green_pixels / total_pixels) * 100.0
-            
-            calculated_ratio = yellow_pct + (green_pct * green_weight)
+            yellow_orange_pct = (yellow_orange_pixels / total_pixels) * 100.0
+            red_pct = (red_pixels / total_pixels) * 100.0
+
+            # 가중치 반영 충진율 산출 (초록 100% + 노랑/주황 45%)
+            calculated_ratio = green_pct + (yellow_orange_pct * 0.45)
             final_ratio = min(calculated_ratio, 100.0)
 
             with col2:
@@ -207,13 +199,13 @@ if uploaded_file is not None:
                 st.image(warped_rgb, use_container_width=True)
             
             with col3:
-                st.markdown("##### 3. 진단 마스크 (BW)")
-                st.image(display_mask_bgr, use_container_width=True)
+                st.markdown("##### 3. 진단 마스크 (Color)")
+                st.image(cv2.cvtColor(display_mask_bgr, cv2.COLOR_BGR2RGB), use_container_width=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
             
-            st.info(f"🤖 **자동 알고리즘 진단:** 식음 지수({cool_ratio*100:.1f}%) ➔ 초록 가중치 **{int(green_weight*100)}%** 자동 적용")
-            st.write(f"🟡 고온 충진(노랑): **{yellow_pct:.2f}%** | 🟢 식은 충진(순수 초록): **{green_pct:.2f}%**")
+            st.info("💡 **영역별 분석 결과:** 🟢 완전 충진(초록): 100% 반영 | 🟡 부분 충진(노랑/주황): 45% 반영 | 🔴 미충진(빨강/흰색): 0% 반영")
+            st.write(f"🟢 **초록(100%):** {green_pct:.2f}% | 🟡 **노랑/주황(45%):** {yellow_orange_pct:.2f}% | 🔴 **빨강/흰색(0%):** {red_pct:.2f}%")
 
             if final_ratio >= 80.0:
                 st.success(f"🎉 **[기준 80% 만족 (합격)]** 최종 가중 충진율: **{final_ratio:.2f}%**")
